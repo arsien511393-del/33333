@@ -7,6 +7,15 @@
   - Bagong files na **wala** sa `backup04032026`, o
   - Lumang files pero **may binago** kumpara sa `backup04032026`.
 
+**Reference format na gagamitin sa baba**  
+- Gagamit tayo ng short notation na ganito:  
+  - `@web.php (92-93, backup)` → tumutukoy sa file na `routes/web.php`, lines 92–93 sa **backup** version.  
+  - `@web.php (86-92, dev)` → tumutukoy sa `routes/web.php`, lines 86–92 sa **development/Procurement System** version.  
+- Halimbawa:  
+  - `@web.php (92-93, backup)` – route na:  
+    - `Route::post('procurementpending/approve-rfq/{rec_id}', 'ProcurementPendingController@approveRfq')->name('procurementpending.approve-rfq');`  
+    - Note: pareho ito sa dev at backup (walang change).
+
 ---
 
 ## 1. Routes at endpoints (`routes/web.php`)
