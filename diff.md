@@ -1,164 +1,120 @@
-## PDF Signer – Summary of Additions
+# PDF Signer & Procurement Pending Processing
 
-- **Overview**
-  - Added a full RFQ/PDF signer flow that uses the **latest attachment** of a `ProcurementPending` item and automatically moves the item to the next step after successful signing.
-  - Signatures are taken from the **user’s uploaded e-signature image** (`e_sign` on `user_tbl`) and applied directly on the PDF.
+This document describes how the **PDF signer** works within **procurement pending** processing. It covers the flow from opening the signer to applying a signature and moving the item to the next step.
 
-- **New / Updated Backend Logic**
-  - **Controller**: `ProcurementPdfSignController`
-    - `signPdfForm($rec_id)`: loads latest PDF attachment, resolves assigned user’s `e_sign`, pre-computes matches for the default search text (usually signer’s full name), and opens the signer page (`pages.procurementpending.sign-pdf`).
-    - `signPdfPreview($rec_id)`: streams the latest PDF attachment for inline preview.
-    - `signPdfMatches($rec_id)`: AJAX endpoint that returns matches for a search phrase in the PDF (used to populate “List of names” without reloading the page).
-    - `signPdfPreviewPosition($rec_id)`: generates a **PDF preview** with rectangles showing where the signature will be placed.
-    - `signPdfMatchImage($rec_id)`: generates a **PNG image** of the page with a rectangle on the target match (used for per‑match preview).
-    - `signPdf(Request $request, $rec_id)`: applies the assigned user’s e-signature onto the PDF (one or more positions), saves a new `signed_XX_originalname.pdf`, attaches it to the current step status, and **auto-moves the pending item to the next step** (including creating/updating `ProjectStepStatus` and `ProjectStepMovements`).
-    - Internal helpers:
-      - Resolve and normalize attachment paths (`resolveAttachmentPath`, `getLatestPdfAttachment`, `getLatestPdf`).
-      - Find Poppler executables (`getPdftotextPath`, `getPdftoppmPath`) and run them safely on Windows via `proc_open`.
-      - Extract text/word bounding boxes from PDF (`extractPdfWordsBbox`, `parseBboxHtml`, `extractPdfLines`, `extractPdfTextWithPhp`, `computePdfMatches`, `findOccurrencesInPdfLayout`) to detect where the signer’s name appears.
-      - Compute final signature rectangles on the PDF for FPDI (`getSignaturePositions`), including **fallback default positions** when exact coordinates are not available.
-  - **Dependencies / libraries used**
-    - `setasign\Fpdi\Fpdi` – overlay signature image onto existing PDF pages.
-    - `Smalot\PdfParser\Parser` – PHP‑level PDF text extraction fallback.
-    - Poppler tools: `pdftotext` and `pdftoppm` (via `proc_open`) – for text and image rendering.
-    - `Intervention\Image` – draw preview rectangles on PNG images from `pdftoppm`.
+---
 
-- **New Routes**
-  - In `routes/web.php` under `procurementpending`:
-    - `GET procurementpending/sign-pdf-form/{rec_id}` → `ProcurementPdfSignController@signPdfForm` (`procurementpending.sign-pdf-form`).
-    - `GET procurementpending/sign-pdf-matches/{rec_id}` → `ProcurementPdfSignController@signPdfMatches` (`procurementpending.sign-pdf-matches`).
-    - `GET procurementpending/sign-pdf-preview/{rec_id}` → `ProcurementPdfSignController@signPdfPreview` (`procurementpending.sign-pdf-preview`).
-    - `GET procurementpending/sign-pdf-preview-position/{rec_id}` → `ProcurementPdfSignController@signPdfPreviewPosition` (`procurementpending.sign-pdf-preview-position`).
-    - `GET procurementpending/sign-pdf-match-image/{rec_id}` → `ProcurementPdfSignController@signPdfMatchImage` (`procurementpending.sign-pdf-match-image`).
-    - `POST procurementpending/sign-pdf/{rec_id}` → `ProcurementPdfSignController@signPdf` (`procurementpending.sign-pdf`).
+## Overview
 
-- **New / Updated Database & Model**
-  - **Migration** `2026_01_30_100000_add_e_sign_to_user_tbl.php`
-    - Adds `e_sign` (`string`, 255, nullable) to `user_tbl` after `user_photo`.
-  - **Migration** `2026_02_26_000001_add_sign_pdf_permissions.php`
-    - Inserts permissions for:
-      - `procurementpending/sign-pdf-form`
-      - `procurementpending/sign-pdf-preview`
-      - `procurementpending/sign-pdf`
-    - Grants them to `role_id` 1–5 by default (if not already existing).
-  - **Model** `UserTbl`
-    - `e_sign` added to `$fillable` and to various field lists (list, view, account edit/view, etc.), so the e-signature path is persisted and available to the signer.
+- **Procurement pending** represents a procurement item at a specific **step** (e.g. BAC, Regional Director). Each pending record is tied to a **project**, a **step**, and an **assigned user**.
+- The **PDF signer** lets an authorized user place an e-signature image on the latest PDF attachment for that step, then **automatically completes the current step and moves the item to the next step** with default assignment.
 
-- **New / Updated UI**
-  - **Sign PDF page** – `resources/views/pages/procurementpending/sign-pdf.blade.php`
-    - Left panel: PDF preview (`iframe` using `procurementpending.download-attachment` with `inline=1`).
-    - Right panel:
-      - **“List of names”**: shows matches for the current search text with checkboxes per match and badges indicating **exact** vs **approximate** positions.
-      - Form to **Sign PDF**:
-        - Field: **“Text to check in PDF (optional)”** (pre-filled with signer’s name by default).
-        - Submits to `procurementpending.sign-pdf` with `search_text` and selected occurrences.
-      - Behavior when no matches:
-        - Still allows signing, but the system re-checks and **will not create a signed file or move the step** if the text is not found.
-  - **Account E‑Sign page** – `resources/views/pages/account/esign.blade.php`
-    - New standalone page for users to **upload their e-signature image** (JPG/PNG/GIF/JPEG, max 5MB).
-    - Uses the existing Dropzone‑based uploader: `fileuploader/upload/e_sign`.
-    - Shows current e-signature preview if already set.
-  - **Account routes** in `routes/web.php`
-    - `GET account/esign` → `AccountController@esign` (`account.esign`).
-    - `POST account/esign` → `AccountController@esignStore` (`account.esign.store`).
+No shell/install or server setup is covered here; only application flow and behavior.
 
-- **Behavior / Flow Notes**
-  - Only users with the proper permissions (via RBAC) can:
-    - Open the signer form / matches (`procurementpending/sign-pdf-form`, `procurementpending/sign-pdf-matches`).
-    - Preview the document (`procurementpending/sign-pdf-preview`).
-    - Actually sign the PDF (`procurementpending/sign-pdf`).
-  - The signer always uses the **latest PDF attachment** from the current step’s status; signed outputs are stored as:
-    - `uploads/attachments/signed_XX_originalname.pdf` (auto‑incrementing `XX` per original document).
-  - After a successful sign:
-    - The new signed PDF is appended to the current `ProjectStepStatus.attachments`.
-    - The system automatically sets the current step to **Completed**, creates/updates the **next step status** with the default assignee, updates the `ProcurementPending` record, logs a movement entry, and redirects the user back to **My Tasks** with a success message.
+---
 
-## Code Snippets (for quick copy‑paste)
+## How Users Reach the PDF Signer
 
-- **Routes block in `routes/web.php` (under ProcurementPending)**:
+1. **My Tasks** (`procurementpending/my-tasks`) — List of pending items assigned to the current user.
+2. **View** a pending item, or open **Update Status** (`procurementpending/update-status-form/{id}`).
+3. On the Update Status page, use the **Sign Document** button to open the **PDF Signer** (`procurementpending/sign-pdf-form/{id}`).
 
-```php
-// PDF signer routes (latest attachment of ProcurementPending)
-Route::get('procurementpending/sign-pdf-form/{rec_id}', 'ProcurementPdfSignController@signPdfForm')
-    ->name('procurementpending.sign-pdf-form');
-Route::get('procurementpending/sign-pdf-matches/{rec_id}', 'ProcurementPdfSignController@signPdfMatches')
-    ->name('procurementpending.sign-pdf-matches');
-Route::get('procurementpending/sign-pdf-preview/{rec_id}', 'ProcurementPdfSignController@signPdfPreview')
-    ->name('procurementpending.sign-pdf-preview');
-Route::get('procurementpending/sign-pdf-preview-position/{rec_id}', 'ProcurementPdfSignController@signPdfPreviewPosition')
-    ->name('procurementpending.sign-pdf-preview-position');
-Route::get('procurementpending/sign-pdf-match-image/{rec_id}', 'ProcurementPdfSignController@signPdfMatchImage')
-    ->name('procurementpending.sign-pdf-match-image');
-Route::post('procurementpending/sign-pdf/{rec_id}', 'ProcurementPdfSignController@signPdf')
-    ->name('procurementpending.sign-pdf');
-```
+If the user has only **sign-pdf** (e.g. Regional Director), they can still open the signer via direct link or from view; they do not need **update-status-form**.
 
-- **Account e-sign routes in `routes/web.php`**:
+---
 
-```php
-Route::get('account/esign', 'AccountController@esign')->name('account.esign');
-Route::post('account/esign', 'AccountController@esignStore')->name('account.esign.store');
-```
+## PDF Signer Page Flow
 
-- **`user_tbl` e-sign column (migration)** – `database/migrations/2026_01_30_100000_add_e_sign_to_user_tbl.php`:
+### 1. Opening the form (`signPdfForm`)
 
-```php
-Schema::table('user_tbl', function (Blueprint $table) {
-    $table->string('e_sign', 255)->nullable()->after('user_photo');
-});
-```
+- Loads the **pending** record and the **latest PDF** from the current step’s attachments (from `project_step_status`).
+- Uses the **assigned user’s** e-signature image (`user_tbl.e_sign`). If the assigned user has no e-sign, the user is redirected back with a message to set e-sign in Account.
+- Default **“Text to check in PDF”** is the assigned user’s full name. This text is used to find **matches** in the PDF (where to place the signature).
+- **Matches** are computed from the PDF (bbox/layout or fallback). They are shown as a list; the user can check/uncheck which occurrences get a signature.
 
-- **Default permissions for PDF signer (migration)** – `database/migrations/2026_02_26_000001_add_sign_pdf_permissions.php`:
+### 2. Live search (“Text to check in PDF”)
 
-```php
-$permissions = [
-    ['permission' => 'procurementpending/sign-pdf-form',    'role_id' => 1],
-    ['permission' => 'procurementpending/sign-pdf-preview', 'role_id' => 1],
-    ['permission' => 'procurementpending/sign-pdf',         'role_id' => 1],
-    // ... repeat for role_id 2–5 ...
-];
-```
+- The user can change the text and trigger a live lookup (`sign-pdf-matches/{id}`) to refresh the list of matches.
+- Matches can have **exact position** (from pdftotext bbox) or **approximate position** (signature placed at a default spot on the page).
 
-- **`UserTbl` model – make sure `e_sign` is fillable** – `app/Models/UserTbl.php`:
+### 3. Submitting the signature (`signPdf` POST)
 
-```php
-protected $fillable = [
-    'full_name','email_address','password','user_photo','e_sign',
-    'account_status','designation_id','user_role','user_role_id',
-    'bac_team_id','division_id','is_archived'
-];
-```
+- **Permissions:** User must have `procurementpending/sign-pdf` (or equivalent as per RBAC).
+- **Inputs:** `search_text`, `selected_occurrences[]` (which match indices to use).
+- **Validation:**
+  - If the user entered **search text** and that text is **not found** in the PDF, the system **does not** create a signed file and **does not** move the step. User is redirected with a message.
+  - If no search text or text is found, signing continues.
 
-## Files / Requirements Needed to Run PDF Signer
+### 4. What happens on successful sign
 
-- **Core PHP code**
-  - `app/Http/Controllers/ProcurementPdfSignController.php`
-  - `routes/web.php` – routes shown above for:
-    - `procurementpending/sign-pdf-*`
-    - `account/esign` (upload e-signature)
-  - `app/Models/UserTbl.php` – with `e_sign` in `$fillable` and field lists.
+1. **Signature placement**
+   - Positions are computed from bbox (or default positions on the first page).
+   - The assigned user’s e-sign image is drawn on the PDF at those positions (all pages that have at least one position).
+   - A new file is saved as `signed_XX_OriginalName.pdf` in the attachments upload folder (`uploads/attachments` by default).
 
-- **Views**
-  - `resources/views/pages/procurementpending/sign-pdf.blade.php` – main signer UI.
-  - `resources/views/pages/account/esign.blade.php` – upload e-signature page.
+2. **Attachments**
+   - The new signed PDF path is **appended** to the **current** step’s `project_step_status.attachments` (latest status for this project/step).
 
-- **Database / migrations**
-  - `2026_01_30_100000_add_e_sign_to_user_tbl.php` – adds `e_sign` column.
-  - `2026_02_26_000001_add_sign_pdf_permissions.php` – inserts signer permissions.
-  - Run: `php artisan migrate`.
+3. **Current step completion**
+   - The **current** `project_step_status` is updated to `status = 'Completed'`.
 
-- **Composer dependencies (check `composer.json`)**
-  - `setasign/fpdi`
-  - `smalot/pdfparser`
-  - `intervention/image`
-  - After editing `composer.json` run: `composer install` or `composer update`.
+4. **Next step**
+   - The next step is determined by `procurement_steps.step_id` (next higher `step_id`).
+   - If there is a next step:
+     - **Next step status:** Existing latest `project_step_status` for that step is updated, or a new one is created. It is set to `In Progress`, with default assignee from `procurement_steps.user_id` (or BAC Sec for step 2 if not set). The signed PDF is added to the next step’s attachments.
+     - **Pending record** is updated: `step_id`, `status_id`, `assigned_desig_id`, `assigned_user`, `is_current = 1`, and `remarks` (e.g. “Auto-moved to next step after PDF signing.”).
+     - A **movement** record is created in `project_step_movements` (from previous assignee to next assignee, `Completed` → `In Progress`).
+   - If there is **no** next step:
+     - The pending record is marked as completed/closed: `is_current = 0`, `closed_at` set.
 
-- **External tools / config**
-  - **Poppler** binaries:
-    - `pdftotext` (or `pdftotext.exe`)
-    - `pdftoppm` (or `pdftoppm.exe`)
-  - Place them where the controller expects (for Windows):
-    - `storage/app/bin/pdftotext.exe`
-    - `storage/app/bin/pdftoppm.exe`
-    - Or set `PDFTOTEXT_PATH` / `PDFTOPPM_PATH` in `.env`.
-  - `config/upload.php` – must have `attachments.upload_dir` (default `uploads/attachments`) so signed files are saved correctly.
+5. **Redirect**
+   - User is redirected to **My Tasks** with a success message (e.g. “PDF signed successfully. Signed file has been added to attachments and the item has been moved to the next step.”).
+
+---
+
+## Permissions (summary)
+
+- **Open PDF Signer (form):** `procurementpending/sign-pdf-form` or `procurementpending/update-status-form` or `procurementpending/sign-pdf`
+- **Preview PDF / matches / position / match image:** Same as above (or `procurementpending/sign-pdf-preview` for preview only).
+- **Submit signature:** `procurementpending/sign-pdf` (or `update-status-form` as per your RBAC).
+
+See **PERMISSIONS-GUIDE.md** for full URL-to-permission mapping and role examples.
+
+---
+
+## Key Behaviors (English summary)
+
+| Situation | Result |
+|-----------|--------|
+| Assigned user has no e-sign | Redirect to view with message; must set e-sign in Account. |
+| No PDF in latest attachments | Redirect to view with “No PDF found in latest attachments.” |
+| User enters “Text to check in PDF” and it is **not** found in the PDF | No signed file created; step not moved; user notified. |
+| User submits with valid (or empty) search text and text is found (or not required) | Signed PDF created and attached; current step set to Completed; pending moved to next step (or closed if no next step). |
+| After successful sign | Redirect to **My Tasks** (not Update Status), because assignee may have changed. |
+
+---
+
+## Routes (reference)
+
+| Method | Route | Purpose |
+|--------|--------|--------|
+| GET | `procurementpending/sign-pdf-form/{id}` | Open PDF signer page |
+| GET | `procurementpending/sign-pdf-preview/{id}` | Serve PDF for inline preview |
+| GET | `procurementpending/sign-pdf-matches/{id}` | AJAX: get matches for “Text to check in PDF” |
+| GET | `procurementpending/sign-pdf-preview-position/{id}` | Preview PDF with signature box(es) |
+| GET | `procurementpending/sign-pdf-match-image/{id}` | PNG of first page with signature rectangle for one match |
+| POST | `procurementpending/sign-pdf/{id}` | Submit signature and apply to PDF |
+
+All of the above are handled by `ProcurementPdfSignController`. Procurement pending list, view, and Update Status are in `ProcurementPendingController`.
+
+---
+
+## Processing summary (procurement pending)
+
+1. **Pending** = one item (project + step + assignee) in the workflow.
+2. **Update Status** = change step status, add remarks, attach files, optionally complete and move to next step manually.
+3. **Sign PDF** = place e-signature on latest PDF, then **automatically** complete current step and move pending to next step (or close if last step).
+4. Signed file is stored as `signed_XX_OriginalName.pdf` and appended to both current and next step attachments when moving.
+5. Movement and assignee changes are recorded in `project_step_movements` and in the pending record’s `assigned_user` / `assigned_desig_id`.
+
+This document focuses only on the application flow for **processing procurement pending** with the PDF signer, in English, without shell or environment setup.
