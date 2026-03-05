@@ -73,3 +73,92 @@
     - The new signed PDF is appended to the current `ProjectStepStatus.attachments`.
     - The system automatically sets the current step to **Completed**, creates/updates the **next step status** with the default assignee, updates the `ProcurementPending` record, logs a movement entry, and redirects the user back to **My Tasks** with a success message.
 
+## Code Snippets (for quick copy‑paste)
+
+- **Routes block in `routes/web.php` (under ProcurementPending)**:
+
+```php
+// PDF signer routes (latest attachment of ProcurementPending)
+Route::get('procurementpending/sign-pdf-form/{rec_id}', 'ProcurementPdfSignController@signPdfForm')
+    ->name('procurementpending.sign-pdf-form');
+Route::get('procurementpending/sign-pdf-matches/{rec_id}', 'ProcurementPdfSignController@signPdfMatches')
+    ->name('procurementpending.sign-pdf-matches');
+Route::get('procurementpending/sign-pdf-preview/{rec_id}', 'ProcurementPdfSignController@signPdfPreview')
+    ->name('procurementpending.sign-pdf-preview');
+Route::get('procurementpending/sign-pdf-preview-position/{rec_id}', 'ProcurementPdfSignController@signPdfPreviewPosition')
+    ->name('procurementpending.sign-pdf-preview-position');
+Route::get('procurementpending/sign-pdf-match-image/{rec_id}', 'ProcurementPdfSignController@signPdfMatchImage')
+    ->name('procurementpending.sign-pdf-match-image');
+Route::post('procurementpending/sign-pdf/{rec_id}', 'ProcurementPdfSignController@signPdf')
+    ->name('procurementpending.sign-pdf');
+```
+
+- **Account e-sign routes in `routes/web.php`**:
+
+```php
+Route::get('account/esign', 'AccountController@esign')->name('account.esign');
+Route::post('account/esign', 'AccountController@esignStore')->name('account.esign.store');
+```
+
+- **`user_tbl` e-sign column (migration)** – `database/migrations/2026_01_30_100000_add_e_sign_to_user_tbl.php`:
+
+```php
+Schema::table('user_tbl', function (Blueprint $table) {
+    $table->string('e_sign', 255)->nullable()->after('user_photo');
+});
+```
+
+- **Default permissions for PDF signer (migration)** – `database/migrations/2026_02_26_000001_add_sign_pdf_permissions.php`:
+
+```php
+$permissions = [
+    ['permission' => 'procurementpending/sign-pdf-form',    'role_id' => 1],
+    ['permission' => 'procurementpending/sign-pdf-preview', 'role_id' => 1],
+    ['permission' => 'procurementpending/sign-pdf',         'role_id' => 1],
+    // ... repeat for role_id 2–5 ...
+];
+```
+
+- **`UserTbl` model – make sure `e_sign` is fillable** – `app/Models/UserTbl.php`:
+
+```php
+protected $fillable = [
+    'full_name','email_address','password','user_photo','e_sign',
+    'account_status','designation_id','user_role','user_role_id',
+    'bac_team_id','division_id','is_archived'
+];
+```
+
+## Files / Requirements Needed to Run PDF Signer
+
+- **Core PHP code**
+  - `app/Http/Controllers/ProcurementPdfSignController.php`
+  - `routes/web.php` – routes shown above for:
+    - `procurementpending/sign-pdf-*`
+    - `account/esign` (upload e-signature)
+  - `app/Models/UserTbl.php` – with `e_sign` in `$fillable` and field lists.
+
+- **Views**
+  - `resources/views/pages/procurementpending/sign-pdf.blade.php` – main signer UI.
+  - `resources/views/pages/account/esign.blade.php` – upload e-signature page.
+
+- **Database / migrations**
+  - `2026_01_30_100000_add_e_sign_to_user_tbl.php` – adds `e_sign` column.
+  - `2026_02_26_000001_add_sign_pdf_permissions.php` – inserts signer permissions.
+  - Run: `php artisan migrate`.
+
+- **Composer dependencies (check `composer.json`)**
+  - `setasign/fpdi`
+  - `smalot/pdfparser`
+  - `intervention/image`
+  - After editing `composer.json` run: `composer install` or `composer update`.
+
+- **External tools / config**
+  - **Poppler** binaries:
+    - `pdftotext` (or `pdftotext.exe`)
+    - `pdftoppm` (or `pdftoppm.exe`)
+  - Place them where the controller expects (for Windows):
+    - `storage/app/bin/pdftotext.exe`
+    - `storage/app/bin/pdftoppm.exe`
+    - Or set `PDFTOTEXT_PATH` / `PDFTOPPM_PATH` in `.env`.
+  - `config/upload.php` – must have `attachments.upload_dir` (default `uploads/attachments`) so signed files are saved correctly.
